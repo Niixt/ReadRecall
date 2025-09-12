@@ -11,3 +11,6 @@ ipykernel
 huggingface_hub[hf_xet]
 bs4
 unstructured
+langgraph
+ipywidgets
+libmagic 

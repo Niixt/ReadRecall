@@ -11,7 +11,21 @@
 ## Installation
 To install and run ReadRecall, follow these steps:
 
-1. Install the required dependencies:
+1. Create a virtual environment:
     ```bash
-    pip install -r requirements.txt
+    conda create -n readrecall python=3.11.9 -y
+    conda activate readrecall
+    ```
+
+2. Install PyTorch (if you have a CUDA-capable GPU, otherwise install the CPU version):
+    ```bash
+    # For CUDA 11.8
+    pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+    # For CPU only
+    # pip3 install torch torchvision
+    ```
+
+3. Install the required dependencies:
+    ```bash
+    pip3 install -r requirements.txt
     ```

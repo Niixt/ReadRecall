@@ -8,6 +8,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
 from langchain_huggingface import HuggingFaceEndpoint, HuggingFacePipeline
 from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM
+import torch
 
 class LocalRAGSystem:
     def __init__(self, documents_path: str, model_name: str = "HuggingFaceTB/SmolLM2-135M"):
@@ -22,6 +23,7 @@ class LocalRAGSystem:
         self.model_name = model_name
         self.vectorstore = None
         self.qa_chain = None
+        self.use_gpu = torch.cuda.is_available()
         
     def load_documents(self) -> List:
         """Load documents from the specified path."""
@@ -41,15 +43,15 @@ class LocalRAGSystem:
         print(f"Loaded {len(texts)} document chunks")
         return texts
     
-    def setup_vectorstore(self, texts):
+    def setup_vectorstore(self, texts, model_name="all-MiniLM-L6-v2"):
         """Set up the vector store with document embeddings."""
         # Use a smaller embedding model that can run locally
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        
+        embeddings = HuggingFaceEmbeddings(model_name=model_name)
+
         self.vectorstore = FAISS.from_documents(texts, embeddings)
         print("Vector store created successfully")
     
-    def load_local_llm(self):
+    def load_local_llm(self, use_gpu=False):
         """Load the local language model using HuggingFace."""
         print(f"Loading model: {self.model_name}")
         
@@ -62,6 +64,9 @@ class LocalRAGSystem:
             trust_remote_code=True,
             revision="main"
         )
+
+        if use_gpu:
+            model = model.to("cuda")
         
         # Create a text generation pipeline
         pipe = pipeline(
@@ -80,7 +85,7 @@ class LocalRAGSystem:
     
     def setup_qa_chain(self):
         """Set up the question-answering chain."""
-        llm = self.load_local_llm()
+        llm = self.load_local_llm(self.use_gpu)
         
         self.qa_chain = RetrievalQA.from_chain_type(
             llm=llm,

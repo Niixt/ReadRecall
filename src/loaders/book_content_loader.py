@@ -92,3 +92,20 @@ def fetch_book_text(url_archive):
         print("No book text found.")
         return None
     return book_text
+
+
+def write_book_to_file(book_text, search_query):
+    """
+    Write the book text to a file.
+    Args:
+        book_text (str): The full text of the book.
+        search_query (str): The search query used to find the book.
+    Returns:
+        str: The path to the file where the book text is written.
+    """
+    filename = search_query.replace(" ", "_")
+    path = f"documents/{filename}.txt"
+    with open(path, "w", encoding='utf-8') as f:
+        f.write(book_text)
+    print(f"Book text written to {path}")
+    return path

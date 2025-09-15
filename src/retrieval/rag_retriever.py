@@ -1,14 +1,16 @@
 import os
 from typing import List, Dict
+import torch
 
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
 from langchain_huggingface import HuggingFaceEndpoint, HuggingFacePipeline
 from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM
-import torch
+
 
 class LocalRAGSystem:
     def __init__(self, documents_path: str, model_name: str = "HuggingFaceTB/SmolLM2-135M"):
@@ -25,8 +27,19 @@ class LocalRAGSystem:
         self.qa_chain = None
         self.use_gpu = torch.cuda.is_available()
         
+        try:
+            with open("utils/custom_prompt.txt", "r") as f:
+                self.custom_prompt_template = f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError("utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
+
     def load_documents(self) -> List:
-        """Load documents from the specified path."""
+        """
+        Load documents from the specified path.
+        
+        Returns:
+            List of document chunks
+        """
         if os.path.isfile(self.documents_path):
             loader = TextLoader(self.documents_path)
             documents = loader.load()
@@ -44,15 +57,26 @@ class LocalRAGSystem:
         return texts
     
     def setup_vectorstore(self, texts, model_name="all-MiniLM-L6-v2"):
-        """Set up the vector store with document embeddings."""
-        # Use a smaller embedding model that can run locally
+        """
+        Set up the vector store with document embeddings.
+        
+        Args:
+            model_name: Name of the embedding model to use
+        """
         embeddings = HuggingFaceEmbeddings(model_name=model_name)
 
         self.vectorstore = FAISS.from_documents(texts, embeddings)
         print("Vector store created successfully")
     
     def load_local_llm(self, use_gpu=False):
-        """Load the local language model using HuggingFace."""
+        """
+        Load the local language model using HuggingFace.
+        
+        Args:
+            use_gpu: Whether to use GPU if available
+        Returns:
+            The loaded language model
+        """
         print(f"Loading model: {self.model_name}")
         
         # Load the model and tokenizer
@@ -74,8 +98,8 @@ class LocalRAGSystem:
             model=model,
             tokenizer=tokenizer,
             max_length=512,
-            temperature=0.7,
-            top_p=0.9,
+            temperature=0.05,
+            top_p=0.1,
             repetition_penalty=1.1
         )
         
@@ -84,8 +108,16 @@ class LocalRAGSystem:
         return llm
     
     def setup_qa_chain(self):
-        """Set up the question-answering chain."""
+        """
+        Set up the question-answering chain with custom prompt template.
+        """
         llm = self.load_local_llm(self.use_gpu)
+        
+        # Create the prompt template
+        prompt = PromptTemplate(
+            template=self.custom_prompt_template,
+            input_variables=["context", "question"]
+        )
         
         self.qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
@@ -93,11 +125,14 @@ class LocalRAGSystem:
             retriever=self.vectorstore.as_retriever(
                 search_kwargs={"k": 3}
             ),
-            return_source_documents=True
+            return_source_documents=False,
+            chain_type_kwargs={"prompt": prompt}
         )
         
     def initialize(self):
-        """Initialize the complete RAG pipeline."""
+        """
+        Initialize the complete RAG pipeline.
+        """
         texts = self.load_documents()
         self.setup_vectorstore(texts)
         self.setup_qa_chain()
@@ -118,21 +153,3 @@ class LocalRAGSystem:
             
         result = self.qa_chain({"query": question})
         return result
-
-if __name__ == "__main__":
-    # Example usage
-    documents_path = "documents"  # Path to your documents folder
-    
-    rag = LocalRAGSystem(documents_path)
-    rag.initialize()
-    
-    while True:
-        question = input("\nEnter your question (or 'quit' to exit): ")
-        if question.lower() == "quit":
-            break
-            
-        result = rag.query(question)
-        print("\nAnswer:", result["result"])
-        print("\nSources:")
-        for i, doc in enumerate(result["source_documents"]):
-            print(f"Source {i+1}:", doc.page_content[:150], "...\n")

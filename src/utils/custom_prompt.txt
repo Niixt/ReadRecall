@@ -1,0 +1,21 @@
+You have the full content of a book. Please answer only about the specific character I mention without adding any extra information or opinions. Restrict your response strictly to facts about this character based on the book content.
+
+Context:
+
+{context}
+
+Question: {question}
+
+Provide:
+
+Who this character is (role, relationships)
+
+Key actions or events involving them
+
+Traits explicitly described in the book
+
+Do not include any spoilers beyond the current chapter if specified.
+Do not provide summaries of other parts of the book.
+Answer in a concise, factual manner only.
+
+**Answer:**

@@ -1,6 +1,8 @@
 import os
+import traceback
 from typing import List, Dict
 import torch
+import traceback
 
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -13,7 +15,7 @@ from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM
 
 
 class LocalRAGSystem:
-    def __init__(self, documents_path: str, model_name: str = "HuggingFaceTB/SmolLM2-135M"):
+    def __init__(self, documents_path: str, model_name: str = "HuggingFaceTB/SmolLM2-135M", model_name_embeddings: str = "all-MiniLM-L6-v2"):
         """
         Initialize the RAG system with a local LLM.
         
@@ -23,6 +25,7 @@ class LocalRAGSystem:
         """
         self.documents_path = documents_path
         self.model_name = model_name
+        self.model_name_embeddings = model_name_embeddings
         self.vectorstore = None
         self.qa_chain = None
         self.use_gpu = torch.cuda.is_available()
@@ -32,6 +35,7 @@ class LocalRAGSystem:
                 self.custom_prompt_template = f.read()
         except FileNotFoundError:
             raise FileNotFoundError("utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
+        self.initialize()
 
     def load_documents(self) -> List:
         """
@@ -48,8 +52,8 @@ class LocalRAGSystem:
             documents = loader.load()
         
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
+            chunk_size=800,
+            chunk_overlap=150
         )
         
         texts = text_splitter.split_documents(documents)
@@ -80,7 +84,7 @@ class LocalRAGSystem:
         print(f"Loading model: {self.model_name}")
         
         # Load the model and tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, use_fast=True)
         model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             device_map="auto",
@@ -97,9 +101,9 @@ class LocalRAGSystem:
             "text-generation",
             model=model,
             tokenizer=tokenizer,
-            max_length=512,
+            max_length=2048,
             temperature=0.05,
-            top_p=0.1,
+            top_p=5, # 0.1,
             repetition_penalty=1.1
         )
         
@@ -134,8 +138,11 @@ class LocalRAGSystem:
         Initialize the complete RAG pipeline.
         """
         texts = self.load_documents()
-        self.setup_vectorstore(texts)
+        print(1.1)
+        self.setup_vectorstore(texts, self.model_name_embeddings)
+        print(1.2)
         self.setup_qa_chain()
+        print(1.3)
         print("RAG system initialized successfully!")
         
     def query(self, question: str) -> Dict:

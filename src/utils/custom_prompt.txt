@@ -1,21 +1,14 @@
-You have the full content of a book. Please answer only about the specific character I mention without adding any extra information or opinions. Restrict your response strictly to facts about this character based on the book content.
+You have the full content of a book. Please answer only about question I ask without adding any extra information or opinions. Restrict your response strictly to facts about the book content.
+Answer with a concise list of distinct traits only. Do not repeat items.
+Provide at most 5 bullet points. Each item should be a single short sentence.
+If you do not know, say "I don't know."
+
+Important constraints (MUST follow):
+- Do NOT ask follow-up questions or ask the user anything.
+- Do NOT request clarifications.
 
 Context:
-
 {context}
 
 Question: {question}
-
-Provide:
-
-Who this character is (role, relationships)
-
-Key actions or events involving them
-
-Traits explicitly described in the book
-
-Do not include any spoilers beyond the current chapter if specified.
-Do not provide summaries of other parts of the book.
-Answer in a concise, factual manner only.
-
-**Answer:**
+**Answer:** 

@@ -14,3 +14,4 @@ unstructured
 langgraph
 ipywidgets
 libmagic 
+langchain_chroma

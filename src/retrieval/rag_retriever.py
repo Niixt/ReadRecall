@@ -172,6 +172,8 @@ class LocalRAGSystem:
         Initialize the complete RAG pipeline.
         """
         texts = self.load_documents()
+        self.docs = texts 
+        return
         self.setup_vectorstore(texts, self.model_name_embeddings)
         self.setup_qa_chain()
         print("RAG system initialized successfully!")

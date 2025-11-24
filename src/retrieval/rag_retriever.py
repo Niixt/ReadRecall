@@ -3,20 +3,22 @@ import traceback
 from typing import List, Dict
 import torch
 import traceback
+import re
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
-# from langchain_community.vectorstores import FAISS
-from langchain_chroma import Chroma
-from chromadb.config import Settings
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
-from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM
+from langchain.docstore.document import Document
+from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM, BitsAndBytesConfig
 
 
 class LocalRAGSystem:
-    def __init__(self, documents_path: str, model_name: str = "HuggingFaceTB/SmolLM2-135M", model_name_embeddings: str = "all-MiniLM-L6-v2"):
+    def __init__(self,
+                 documents_path: str,
+                 model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
+                 model_name_embeddings: str = "sentence-transformers/all-MiniLM-L6-v2"):
         """
         Initialize the RAG system with a local LLM.
         
@@ -26,11 +28,33 @@ class LocalRAGSystem:
         """
         self.documents_path = documents_path
         self.model_name = model_name
-        self.model_name_embeddings = model_name_embeddings
-        self.vectorstore = None
-        self.qa_chain = None
+        self.index = None
+        self.chunks = []
+        self.chunk_metadatas = [] # Added to store metadata
+        self.embeddings = None    # Added to store raw embeddings
+        self.qa_pipeline = None
+        self.embedder = SentenceTransformer(model_name_embeddings)
         self.use_gpu = torch.cuda.is_available()
         
+        self.MAX_NEW_TOKENS = 512
+        self.CHUNK_SIZE = 1000
+        self.CHUNK_OVERLAP = 200
+        self.TOP_K_CHUNKS = 10
+        
+        # Load HF Token
+        try:
+            if os.path.exists("..\\HF_TOKEN"):
+                with open("..\\HF_TOKEN", "r") as file:
+                    hf_token = file.read().strip()
+                os.environ["HF_TOKEN"] = hf_token
+            else:
+                print("Warning: HF_TOKEN file not found. Some models may not load.")
+                hf_token = None
+        except Exception as e:
+            print(f"Error reading HF_TOKEN: {e}")
+            hf_token = None
+        self.hf_token = hf_token
+
         try:
             with open("utils/custom_prompt.txt", "r") as f:
                 self.custom_prompt_template = f.read()
@@ -38,66 +62,101 @@ class LocalRAGSystem:
             raise FileNotFoundError("utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
         self.initialize()
 
+    def parse_chapters(self, text: str) -> List[Document]:
+        """
+        Splits the full text into chapter-level Documents.
+        Handles: "Chapter 1", "CHAPTER IV", "IV", "1", "Part One", etc.
+        """
+        pattern = r'(?m)^\s*((?:CHAPTER|Chapter|chapter|PART|Part|part|BOOK|Book|book)\s+(?:[IVXLCDM]+|\d+|[A-Za-z]+)|(?:[IVXLCDM]+)|(?:\d+))\s*$'
+        
+        matches = list(re.finditer(pattern, text))
+        
+        documents = []
+        
+        # Handle text before the first chapter (Preface, Title Page, etc.)
+        if not matches:
+            return [Document(page_content=text, metadata={"chapter": "Full Text"})]
+            
+        if matches[0].start() > 0:
+            preamble = text[:matches[0].start()].strip()
+            if preamble:
+                documents.append(Document(page_content=preamble,
+                                          metadata={"chapter": "Preamble", "chapter_index": 0}))
+        
+        for i in range(len(matches)):
+            # Start of this chapter
+            start = matches[i].start()
+            # End is start of next chapter, or end of text
+            end = matches[i+1].start() if i + 1 < len(matches) else len(text)
+            
+            # Extract title and content
+            title = matches[i].group(1).strip()
+            content = text[start:end].strip()
+            
+            documents.append(Document(page_content=content,
+                                      metadata={"chapter": title, "chapter_index": i + 1}))
+            
+        print(f"Identified {len(documents)} chapters/sections.")
+        return documents
+
     def load_documents(self) -> List:
         """
-        Load documents from the specified path.
-        
-        Returns:
-            List of document chunks
+        Load documents, split by chapter, then chunk recursively.
         """
+        # 1. Load the raw text content
+        full_text = ""
         if os.path.isfile(self.documents_path):
-            loader = TextLoader(self.documents_path)
-            documents = loader.load()
+            with open(self.documents_path, 'r', encoding='utf-8') as f:
+                full_text = f.read()
         else:
+            # For directories, you might need to loop through files
             loader = DirectoryLoader(self.documents_path, glob="**/*.txt")
-            documents = loader.load()
+            raw_docs = loader.load()
+            full_text = "\n\n".join([d.page_content for d in raw_docs])
         
+        # 2. Split into Chapter Documents
+        chapter_docs = self.parse_chapters(full_text)
+        
+        # 3. Chunk within chapters (so chunks don't cross chapter boundaries)
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,
-            chunk_overlap=150
+            chunk_size=self.CHUNK_SIZE,
+            chunk_overlap=self.CHUNK_OVERLAP,
+            separators=["\n\n", "\n", ". ", " ", ""],
+            keep_separator=False
         )
         
-        texts = text_splitter.split_documents(documents)
-        print(f"Loaded {len(texts)} document chunks")
-        return texts
+        # split_documents preserves the metadata (chapter title) from chapter_docs
+        final_chunks = text_splitter.split_documents(chapter_docs)
+        
+        print(f"Created {len(final_chunks)} chunks from {len(chapter_docs)} chapters.")
+        return final_chunks
     
-    def setup_vectorstore(self, texts, model_name="all-MiniLM-L6-v2", persist_directory="chroma_db"):
+    def setup_vectorstore(self, texts):
         """
-        Set up the vector store with document embeddings.
+        Set up the vector store with document embeddings using FAISS.
         
         Args:
             texts: list of langchain Document objects (already split)
-            model_name: embedding model name
-            persist_directory: where to persist the chroma DB
         """
-        embeddings = HuggingFaceEmbeddings(model_name=model_name)
+        print("Creating embeddings and vector store...")
+        # Extract text content from Document objects
+        self.chunks = [doc.page_content for doc in texts]
+        self.chunk_metadatas = [doc.metadata for doc in texts] # Store metadata
 
-        # If a persisted DB exists and you want to reuse it, you can construct Chroma with the same persist_directory.
-        # Using from_documents will overwrite/add to the persisted store.
-        self.vectorstore = Chroma(
-            collection_name="documents",
-            embedding_function=embeddings
-        )
+        if not self.chunks:
+            print("No documents to index.")
+            return
 
-        # add documents to the vector store
-        ids = [f"doc_{i}" for i in range(len(texts))]
-        self.vectorstore.add_documents(texts, ids=ids)
+        # Create embeddings
+        embeddings = self.embedder.encode(self.chunks)
+        self.embeddings = embeddings # Store embeddings for filtered search
 
-        # Persist to disk so future runs can load it
-        try:
-            self.vectorstore.persist()
-        except Exception:
-            # persist() may not be required/available depending on your langchain/chromadb version
-            pass
-
-        # Debug/logging (Chroma objects don't expose `.index.ntotal`)
-        try:
-            # number of embeddings is available via .count() depending on langchain version
-            n_vectors = self.vectorstore._collection.count() if hasattr(self.vectorstore, "_collection") else "unknown"
-        except Exception:
-            n_vectors = "unknown"
-
-        print(f"Vector store created (persist_directory={persist_directory}), vectors={n_vectors}")
+        # Build FAISS index
+        d = embeddings.shape[1]
+        self.index = faiss.IndexFlatL2(d)
+        self.index.add(embeddings)
+        
+        print(f"Vector store created with {len(self.chunks)} chunks.")
     
     def load_local_llm(self, use_gpu=False):
         """
@@ -109,76 +168,64 @@ class LocalRAGSystem:
             The loaded language model
         """
         print(f"Loading model: {self.model_name}")
-        # Load the model and tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name,
-                                                  use_fast=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            device_map="auto",
-            token=None,  # Add your HF token here if needed
-            trust_remote_code=True,
-            revision="main"
-        )
-        model.generation_config.pad_token_id = tokenizer.eos_token_id
+        try:
+            # Attempt to load in 4-bit to save VRAM (fits easily in 16GB)
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4"
+            )
+            
+            tokenizer = AutoTokenizer.from_pretrained(self.model_name,
+                                                      token=self.hf_token)
+            
+            # Initialize pipeline
+            qa_pipeline = pipeline(
+                "text-generation",
+                model=self.model_name,
+                model_kwargs={
+                    "quantization_config": quantization_config,
+                    "device_map": "auto"
+                },
+                tokenizer=tokenizer,
+                token=self.hf_token,
+                max_new_tokens=self.MAX_NEW_TOKENS,
+                do_sample=True,
+                temperature=0.6,
+                top_p=0.9
+            )
+            print("Model loaded successfully with 4-bit quantization!")
+        except Exception as e:
+            print(f"Failed to load 4-bit model: {e}")
+            print("Falling back to standard loading (might require more VRAM)...")
+            # Fallback to fp16 if 4-bit fails (might OOM on 16GB depending on context)
+            qa_pipeline = pipeline(
+                "text-generation",
+                model=self.model_name,
+                model_kwargs={
+                    "torch_dtype": torch.float16,
+                    "device_map": "auto"
+                },
+                token=self.hf_token,
+                max_new_tokens=self.MAX_NEW_TOKENS,
+                do_sample=True,
+                temperature=0.6
+            )
+            print("Model loaded successfully (fp16)!")
 
-        if use_gpu:
-            model = model.to("cuda")
-        
-        # Create a text generation pipeline
-        pipe = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=200,
-            do_sample=True,
-            temperature=0.1,
-            top_p=0.8, # 0.9,
-            top_k=20, # 50
-            min_p=0,
-            repetition_penalty=1.3,
-            no_repeat_ngram_size=4,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id
-        )
-        
-        # Create a LangChain wrapper around the pipeline
-        llm = HuggingFacePipeline(pipeline=pipe)
-        return llm
+        return qa_pipeline
     
-    def setup_qa_chain(self):
-        """
-        Set up the question-answering chain with custom prompt template.
-        """
-        llm = self.load_local_llm(self.use_gpu)
-        
-        # Create the prompt template
-        prompt = PromptTemplate(
-            template=self.custom_prompt_template,
-            input_variables=["context", "question"]
-        )
-        
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=self.vectorstore.as_retriever(
-                search_kwargs={"k": 3}
-            ),
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": prompt}
-        )
-        
     def initialize(self):
         """
         Initialize the complete RAG pipeline.
         """
         texts = self.load_documents()
         self.docs = texts 
-        return
-        self.setup_vectorstore(texts, self.model_name_embeddings)
-        self.setup_qa_chain()
+        self.setup_vectorstore(texts)
+        self.qa_pipeline = self.load_local_llm(self.use_gpu)
         print("RAG system initialized successfully!")
         
-    def query(self, question: str) -> Dict:
+    def query(self, question: str, chapter_max: int = None) -> Dict:
         """
         Query the RAG system.
         
@@ -188,8 +235,72 @@ class LocalRAGSystem:
         Returns:
             Dict containing the answer and source documents
         """
-        if not self.qa_chain:
+        if not self.qa_pipeline or not self.index:
             raise ValueError("RAG system not initialized. Call initialize() first.")
             
-        result = self.qa_chain.invoke({"query": question})
-        return result
+        # Search
+        q_emb = self.embedder.encode([question])
+
+
+        # Determine search space
+        if chapter_max is not None:
+            # Find the cutoff index for the allowed chapters
+            # Since chunks are sequential, we find the first chunk that exceeds the limit
+            cutoff_index = len(self.chunks)
+            for i, meta in enumerate(self.chunk_metadatas):
+                if meta.get('chapter_index', 0) > chapter_max:
+                    cutoff_index = i
+                    break
+            
+            if cutoff_index == 0:
+                return {"result": "I can't answer that yet, as there is no book content available up to this chapter.", "source_documents": []}
+
+            # Slice the embeddings and create a temporary index
+            # This ensures we ONLY search within the allowed scope
+            subset_embeddings = self.embeddings[:cutoff_index]
+            
+            d = subset_embeddings.shape[1]
+            search_index = faiss.IndexFlatL2(d)
+            search_index.add(subset_embeddings)
+            
+            k = min(self.TOP_K_CHUNKS, cutoff_index)
+            D, I = search_index.search(q_emb, k)
+            # Retrieve chunks from the subset (indices match self.chunks[:cutoff_index])
+            retrieved_chunks = [self.chunks[i] for i in I[0]]
+            
+        else:
+            # Full search
+            k = min(self.TOP_K_CHUNKS, len(self.chunks))
+            D, I = self.index.search(q_emb, k)
+            retrieved_chunks = [self.chunks[i] for i in I[0]]
+        print(f"Retrieved indices: {I}")
+        
+        
+        # Deduplicate
+        unique_chunks = []
+        seen = set()
+        for chunk in retrieved_chunks:
+            if chunk not in seen:
+                unique_chunks.append(chunk)
+                seen.add(chunk)
+        
+        relevant_context = "\n\n...\n\n".join(unique_chunks)
+        print(f"Relevant context for question:\n{relevant_context}")
+        # Construct prompt using Llama 3 chat template forma
+        messages = [
+            {"role": "system", "content": self.custom_prompt_template},
+            {"role": "user", "content": f"Context:\n{relevant_context}\n\nQuestion: {question}"}
+        ]
+        
+        # Generate
+        outputs = self.qa_pipeline(
+            messages,
+            max_new_tokens=self.MAX_NEW_TOKENS,
+            do_sample=True,
+            temperature=0.6,
+            top_p=0.9
+        )
+        print(f"Raw model output: {outputs}")
+        generated_text = outputs[0]['generated_text'][-1]['content']
+        
+        return {"result": generated_text, "source_documents": unique_chunks}

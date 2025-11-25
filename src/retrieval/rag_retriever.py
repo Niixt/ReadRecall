@@ -1,22 +1,40 @@
 import os
+import sys
+import subprocess
 import traceback
 from typing import List, Dict
 import torch
-import traceback
 import re
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+# Monkeypatch subprocess.Popen to handle encoding errors gracefully on Windows
+# This fixes UnicodeDecodeError when libraries (like bitsandbytes) capture output containing non-UTF-8 characters
+_original_Popen = subprocess.Popen
+
+class SafePopen(_original_Popen):
+    def __init__(self, *args, **kwargs):
+        # If running in text mode, ensure we handle encoding errors
+        if kwargs.get('text') or kwargs.get('universal_newlines'):
+            if 'errors' not in kwargs:
+                kwargs['errors'] = 'replace'
+        super().__init__(*args, **kwargs)
+
+subprocess.Popen = SafePopen
+
+os.environ["BITSANDBYTES_NOWELCOME"] = "1"
+
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
-from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM, BitsAndBytesConfig, logging as transformers_logging
 
 
 class LocalRAGSystem:
     def __init__(self,
                  documents_path: str,
+                 path_token_hf: str = None,
                  model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
                  model_name_embeddings: str = "sentence-transformers/all-MiniLM-L6-v2"):
         """
@@ -35,32 +53,49 @@ class LocalRAGSystem:
         self.qa_pipeline = None
         self.embedder = SentenceTransformer(model_name_embeddings)
         self.use_gpu = torch.cuda.is_available()
-        
+        self.path_token_hf = path_token_hf
+        self.hf_token = self.load_hf_token() if path_token_hf else None
+        self.pad_token_id = None
+
         self.MAX_NEW_TOKENS = 512
         self.CHUNK_SIZE = 1000
         self.CHUNK_OVERLAP = 200
         self.TOP_K_CHUNKS = 10
         
-        # Load HF Token
         try:
-            if os.path.exists("..\\HF_TOKEN"):
-                with open("..\\HF_TOKEN", "r") as file:
-                    hf_token = file.read().strip()
-                os.environ["HF_TOKEN"] = hf_token
-            else:
-                print("Warning: HF_TOKEN file not found. Some models may not load.")
-                hf_token = None
-        except Exception as e:
-            print(f"Error reading HF_TOKEN: {e}")
-            hf_token = None
-        self.hf_token = hf_token
-
-        try:
-            with open("utils/custom_prompt.txt", "r") as f:
+            with open("utils/custom_prompt.txt", "r", encoding="utf-8") as f:
+                self.custom_prompt_template = f.read()
+        except UnicodeDecodeError:
+            # Fallback for Windows-1252 encoded files
+            with open("utils/custom_prompt.txt", "r", encoding="cp1252") as f:
                 self.custom_prompt_template = f.read()
         except FileNotFoundError:
             raise FileNotFoundError("utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
+        
         self.initialize()
+
+    def load_hf_token(self) -> str:
+        """
+        Load HuggingFace token from a file.
+        
+        Args:
+            path_token_hf: Path to the file containing the HF token
+        Returns:
+            The HuggingFace token as a string
+        """
+        try:
+            # Try UTF-8 first
+            with open(self.path_token_hf, "r", encoding="utf-8") as file:
+                hf_token = file.read().strip()
+            return hf_token
+        except UnicodeDecodeError:
+            print("UTF-8 decode failed for token file, trying cp1252...")
+            with open(self.path_token_hf, "r", encoding="cp1252") as file:
+                hf_token = file.read().strip()
+            return hf_token
+        except Exception as e:
+            print(f"Error reading HF_TOKEN: {e}")
+            return None
 
     def parse_chapters(self, text: str) -> List[Document]:
         """
@@ -96,7 +131,6 @@ class LocalRAGSystem:
             documents.append(Document(page_content=content,
                                       metadata={"chapter": title, "chapter_index": i + 1}))
             
-        print(f"Identified {len(documents)} chapters/sections.")
         return documents
 
     def load_documents(self) -> List:
@@ -106,8 +140,14 @@ class LocalRAGSystem:
         # 1. Load the raw text content
         full_text = ""
         if os.path.isfile(self.documents_path):
-            with open(self.documents_path, 'r', encoding='utf-8') as f:
-                full_text = f.read()
+            try:
+                with open(self.documents_path, 'r', encoding='utf-8') as f:
+                    full_text = f.read()
+            except UnicodeDecodeError:
+                print(f"Warning: UTF-8 decoding failed for {self.documents_path}. Retrying with cp1252...")
+                # Fallback to cp1252 (Windows default) and replace any remaining unknown characters
+                with open(self.documents_path, 'r', encoding='cp1252', errors='replace') as f:
+                    full_text = f.read()
         else:
             # For directories, you might need to loop through files
             loader = DirectoryLoader(self.documents_path, glob="**/*.txt")
@@ -175,10 +215,10 @@ class LocalRAGSystem:
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_quant_type="nf4"
             )
-            
+            print("Attempting to load model with 4-bit quantization...")
             tokenizer = AutoTokenizer.from_pretrained(self.model_name,
                                                       token=self.hf_token)
-            
+            print("Tokenizer loaded successfully.")
             # Initialize pipeline
             qa_pipeline = pipeline(
                 "text-generation",
@@ -194,6 +234,7 @@ class LocalRAGSystem:
                 temperature=0.6,
                 top_p=0.9
             )
+            self.pad_token_id = tokenizer.pad_token_id
             print("Model loaded successfully with 4-bit quantization!")
         except Exception as e:
             print(f"Failed to load 4-bit model: {e}")
@@ -225,7 +266,7 @@ class LocalRAGSystem:
         self.qa_pipeline = self.load_local_llm(self.use_gpu)
         print("RAG system initialized successfully!")
         
-    def query(self, question: str, chapter_max: int = None) -> Dict:
+    def query(self, question: str, chapter_max: int = None, debug_print: bool = False) -> Dict:
         """
         Query the RAG system.
         
@@ -273,7 +314,8 @@ class LocalRAGSystem:
             k = min(self.TOP_K_CHUNKS, len(self.chunks))
             D, I = self.index.search(q_emb, k)
             retrieved_chunks = [self.chunks[i] for i in I[0]]
-        print(f"Retrieved indices: {I}")
+        if debug_print:
+            print(f"Retrieved indices: {I}")
         
         
         # Deduplicate
@@ -285,7 +327,8 @@ class LocalRAGSystem:
                 seen.add(chunk)
         
         relevant_context = "\n\n...\n\n".join(unique_chunks)
-        print(f"Relevant context for question:\n{relevant_context}")
+        if debug_print:
+            print(f"Relevant context for question:\n{relevant_context}")
         # Construct prompt using Llama 3 chat template forma
         messages = [
             {"role": "system", "content": self.custom_prompt_template},
@@ -295,12 +338,14 @@ class LocalRAGSystem:
         # Generate
         outputs = self.qa_pipeline(
             messages,
+            pad_token_id=self.pad_token_id if self.pad_token_id is not None else 0,
             max_new_tokens=self.MAX_NEW_TOKENS,
             do_sample=True,
             temperature=0.6,
             top_p=0.9
         )
-        print(f"Raw model output: {outputs}")
+        if debug_print:
+            print(f"Raw model output: {outputs}")
         generated_text = outputs[0]['generated_text'][-1]['content']
         
         return {"result": generated_text, "source_documents": unique_chunks}

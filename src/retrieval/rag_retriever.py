@@ -7,7 +7,7 @@ import torch
 import re
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 # Monkeypatch subprocess.Popen to handle encoding errors gracefully on Windows
 # This fixes UnicodeDecodeError when libraries (like bitsandbytes) capture output containing non-UTF-8 characters
@@ -36,7 +36,8 @@ class LocalRAGSystem:
                  documents_path: str,
                  path_token_hf: str = None,
                  model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
-                 model_name_embeddings: str = "sentence-transformers/all-MiniLM-L6-v2"):
+                 model_name_embeddings: str = "sentence-transformers/all-MiniLM-L6-v2",
+                 model_name_reranker: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
         """
         Initialize the RAG system with a local LLM.
         
@@ -52,6 +53,7 @@ class LocalRAGSystem:
         self.embeddings = None    # Added to store raw embeddings
         self.qa_pipeline = None
         self.embedder = SentenceTransformer(model_name_embeddings)
+        self.reranker = CrossEncoder(model_name_reranker)
         self.use_gpu = torch.cuda.is_available()
         self.path_token_hf = path_token_hf
         self.hf_token = self.load_hf_token() if path_token_hf else None
@@ -61,6 +63,7 @@ class LocalRAGSystem:
         self.CHUNK_SIZE = 1000
         self.CHUNK_OVERLAP = 200
         self.TOP_K_CHUNKS = 10
+        self.CANDIDATE_K_CHUNKS = 50 # Fetch more chunks for re-ranking
         
         try:
             with open("utils/custom_prompt.txt", "r", encoding="utf-8") as f:
@@ -304,14 +307,14 @@ class LocalRAGSystem:
             search_index = faiss.IndexFlatL2(d)
             search_index.add(subset_embeddings)
             
-            k = min(self.TOP_K_CHUNKS, cutoff_index)
+            k = min(self.CANDIDATE_K_CHUNKS, cutoff_index)
             D, I = search_index.search(q_emb, k)
             # Retrieve chunks from the subset (indices match self.chunks[:cutoff_index])
             retrieved_chunks = [self.chunks[i] for i in I[0]]
             
         else:
             # Full search
-            k = min(self.TOP_K_CHUNKS, len(self.chunks))
+            k = min(self.CANDIDATE_K_CHUNKS, len(self.chunks))
             D, I = self.index.search(q_emb, k)
             retrieved_chunks = [self.chunks[i] for i in I[0]]
         if debug_print:
@@ -326,7 +329,24 @@ class LocalRAGSystem:
                 unique_chunks.append(chunk)
                 seen.add(chunk)
         
-        relevant_context = "\n\n...\n\n".join(unique_chunks)
+        # Re-ranking
+        if unique_chunks:
+            pairs = [[question, chunk] for chunk in unique_chunks]
+            scores = self.reranker.predict(pairs)
+            
+            # Zip, sort by score, and unzip
+            scored_chunks = sorted(zip(unique_chunks, scores), key=lambda x: x[1], reverse=True)
+            
+            # Take top K
+            final_chunks = [chunk for chunk, score in scored_chunks[:self.TOP_K_CHUNKS]]
+            if debug_print:
+                print("Re-ranking scores:")
+                for chunk, score in scored_chunks[:self.TOP_K_CHUNKS]:
+                    print(f"Score: {score:.4f} | Chunk: {chunk[:50]}...")
+        else:
+            final_chunks = []
+        
+        relevant_context = "\n\n...\n\n".join(final_chunks)
         if debug_print:
             print(f"Relevant context for question:\n{relevant_context}")
         # Construct prompt using Llama 3 chat template forma
@@ -348,4 +368,4 @@ class LocalRAGSystem:
             print(f"Raw model output: {outputs}")
         generated_text = outputs[0]['generated_text'][-1]['content']
         
-        return {"result": generated_text, "source_documents": unique_chunks}
+        return {"result": generated_text, "source_documents": final_chunks}

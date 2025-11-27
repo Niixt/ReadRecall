@@ -17,15 +17,47 @@ To install and run ReadRecall, follow these steps:
     conda activate readrecall
     ```
 
-2. Install PyTorch (if you have a CUDA-capable GPU, otherwise install the CPU version):
+2. Install PyTorch (**if you have a CUDA-capable GPU**):
     ```bash
     # For CUDA 11.8
     pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-    # For CPU only
-    # pip3 install torch torchvision
     ```
 
 3. Install the required dependencies:
     ```bash
     pip3 install -r requirements.txt
     ```
+
+## Usage instructions
+
+1. For the CLI version: 
+
+    *Recommended for faster performance*
+    ```bash
+    python src/app_cli.py
+
+    # Welcome to the ReadRecall CLI!
+    # Type 'exit' or 'quit' to leave the application.
+    Search and load a book: [book title]
+
+    # Ready!: 100%|███████████████████████████████████|
+    # Loeaded '[book title]'. Found X chapters.
+    Set chapter limit (number) leave empty for no limit: [max chapter]
+
+    You: [your question]
+    ```
+
+
+2. For the Gradio web interface:
+    
+    *Really slower, but more user-friendly.*
+    ```bash
+    python src/app.py
+    ```
+    Then open your web browser and go to `http://127.0.0.1:7860`.
+
+## Note
+
+> You will need to create a file named `HF_TOKEN` in the root directory of the project containing your Hugging Face API token for model access.
+
+> This project works only with books with free access on `archive.org`. Please test with public domain books.

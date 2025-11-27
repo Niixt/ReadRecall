@@ -36,31 +36,43 @@ from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM, BitsAndB
 
 class LocalRAGSystem:
     def __init__(self,
-                 documents_path: str,
-                 path_token_hf: str = None,
-                 model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
-                 model_name_embeddings: str = "sentence-transformers/all-MiniLM-L6-v2",
-                 model_name_reranker: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                 path_documents: str,
+                 path_token_hf: str,
+                 path_custom_prompt: str,
+                 model_name: str,
+                 model_name_embeddings: str,
+                 model_name_reranker: str,
                  debug_print: bool = False):
         """
         Initialize the RAG system with a local LLM.
         
         Args:
-            documents_path: Path to documents for the knowledge base
+            path_documents: Path to documents for the knowledge base
+            path_token_hf: Path to the file containing the HuggingFace token
+            path_custom_prompt: Path to the custom prompt template file
             model_name: Name of the HuggingFace model to use
+            model_name_embeddings: Name of the sentence transformer model for embeddings
+            model_name_reranker: Name of the cross-encoder model for re-ranking
+            debug_print: Whether to print debug information
         """
-        self.documents_path = documents_path
+        
+        self.path_documents = path_documents
         self.model_name = model_name
         self.index = None
         self.chunks = []
-        self.chunk_metadatas = [] # Added to store metadata
-        self.embeddings = None    # Added to store raw embeddings
+        self.chunk_metadatas = []
+        self.embeddings = None
         self.qa_pipeline = None
-        self.embedder = SentenceTransformer(model_name_embeddings)
-        self.reranker = CrossEncoder(model_name_reranker)
+        
+        embed_model = model_name_embeddings
+        rerank_model = model_name_reranker
+        
+        self.embedder = SentenceTransformer(embed_model)
+        self.reranker = CrossEncoder(rerank_model)
         self.use_gpu = torch.cuda.is_available()
+        
         self.path_token_hf = path_token_hf
-        self.hf_token = self.load_hf_token() if path_token_hf else None
+        self.hf_token = self.load_hf_token() if self.path_token_hf else None
         self.pad_token_id = None
         self.debug_print = debug_print
 
@@ -70,15 +82,17 @@ class LocalRAGSystem:
         self.TOP_K_CHUNKS = 10
         self.CANDIDATE_K_CHUNKS = 50 # Fetch more chunks for re-ranking
         
+        prompt_path = path_custom_prompt
+        
         try:
-            with open("src/utils/custom_prompt.txt", "r", encoding="utf-8") as f:
+            with open(prompt_path, "r", encoding="utf-8") as f:
                 self.custom_prompt_template = f.read()
         except UnicodeDecodeError:
             # Fallback for Windows-1252 encoded files
-            with open("src/utils/custom_prompt.txt", "r", encoding="cp1252") as f:
+            with open(prompt_path, "r", encoding="cp1252") as f:
                 self.custom_prompt_template = f.read()
         except FileNotFoundError:
-            raise FileNotFoundError("src/utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
+            raise FileNotFoundError(f"{prompt_path} file not found. Please create the file with the desired prompt template.")
         
         self.initialize()
 
@@ -147,18 +161,18 @@ class LocalRAGSystem:
         """
         # 1. Load the raw text content
         full_text = ""
-        if os.path.isfile(self.documents_path):
+        if os.path.isfile(self.path_documents):
             try:
-                with open(self.documents_path, 'r', encoding='utf-8') as f:
+                with open(self.path_documents, 'r', encoding='utf-8') as f:
                     full_text = f.read()
             except UnicodeDecodeError:
-                print(f"Warning: UTF-8 decoding failed for {self.documents_path}. Retrying with cp1252...")
+                print(f"Warning: UTF-8 decoding failed for {self.path_documents}. Retrying with cp1252...")
                 # Fallback to cp1252 (Windows default) and replace any remaining unknown characters
-                with open(self.documents_path, 'r', encoding='cp1252', errors='replace') as f:
+                with open(self.path_documents, 'r', encoding='cp1252', errors='replace') as f:
                     full_text = f.read()
         else:
             # For directories, you might need to loop through files
-            loader = DirectoryLoader(self.documents_path, glob="**/*.txt")
+            loader = DirectoryLoader(self.path_documents, glob="**/*.txt")
             raw_docs = loader.load()
             full_text = "\n\n".join([d.page_content for d in raw_docs])
         

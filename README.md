@@ -30,7 +30,26 @@ To install and run ReadRecall, follow these steps:
 
 ## Usage instructions
 
-1. For the CLI version: 
+1. Prepare your configuration file:
+    
+    Edit the `config.json` file to set your model preferences and paths:
+    ```json
+    {
+        "paths": {
+            // Path to store downloaded and processed books
+            "documents": "src/documents",
+            // Path to your Hugging Face API token
+            "hf_token": "HF_TOKEN",
+            // Path to your custom prompt file
+            "custom_prompt": "src/utils/custom_prompt.txt"
+        },
+        "models": {
+            // You can leave the default models or change them as you wish
+        }
+    }
+    ```
+
+2. For the CLI version: 
 
     *Recommended for faster performance*
     ```bash
@@ -48,7 +67,7 @@ To install and run ReadRecall, follow these steps:
     ```
 
 
-2. For the Gradio web interface:
+3. For the Gradio web interface:
     
     *Really slower, but more user-friendly.*
     ```bash

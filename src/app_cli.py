@@ -13,12 +13,15 @@ sys.path.append(current_dir)
 
 import loaders.book_content_loader as bcl
 import retrieval.rag_retriever as rr
+from utils.config_loader import load_config
 
 # Global variables to store the RAG system
 rag_system = None
+config = load_config()
 
 def search_and_load_book(book_name: str) -> tuple[str, bool]:
     global rag_system
+    global config
     
     if not book_name:
         return "Please enter a book name.", False
@@ -52,7 +55,7 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
         cleaned_text = bcl.clean_book_text(book_text, page_break_token='\f')
         
         # Save to file
-        documents_dir = os.path.join(current_dir, "documents")
+        documents_dir = config['paths']['documents']
         os.makedirs(documents_dir, exist_ok=True)
         filename = f"{book_name.replace(' ', '_')}_clean.txt"
         file_path = os.path.join(documents_dir, filename)
@@ -63,15 +66,18 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
 
         pbar.set_description("Initializing RAG System (Loading Model)...")
         
-        # Path to HF token - assuming it's in the parent directory of src
-        token_path = os.path.join(os.path.dirname(current_dir), "HF_TOKEN")
+        # Path to HF token
+        token_path = config['paths']['hf_token']
         
         try:
             # Initialize RAG
             rag_system = rr.LocalRAGSystem(
-                documents_path=file_path,
+                path_documents=file_path,
                 path_token_hf=token_path,
-                model_name="meta-llama/Meta-Llama-3-8B-Instruct",
+                path_custom_prompt=config['paths']['custom_prompt'],
+                model_name=config['models']['llm'],
+                model_name_embeddings=config['models']['embeddings'],
+                model_name_reranker=config['models']['reranker'],
                 debug_print=False
             )
         except Exception as e:
@@ -94,7 +100,6 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
     
     status_msg = f"Loaded '{book_name}'. Found {max_chapter} chapters."
     
-    # Update slider and show chat
     return status_msg, True
 
 def chat_response(message : str, history : list, chapter_limit : int | None = None, debug_print : bool = False):

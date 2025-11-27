@@ -9,6 +9,9 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer, CrossEncoder
 
+# Fix for deadlock in threaded environments (Gradio)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 # Monkeypatch subprocess.Popen to handle encoding errors gracefully on Windows
 # This fixes UnicodeDecodeError when libraries (like bitsandbytes) capture output containing non-UTF-8 characters
 _original_Popen = subprocess.Popen
@@ -37,7 +40,8 @@ class LocalRAGSystem:
                  path_token_hf: str = None,
                  model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
                  model_name_embeddings: str = "sentence-transformers/all-MiniLM-L6-v2",
-                 model_name_reranker: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+                 model_name_reranker: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                 debug_print: bool = False):
         """
         Initialize the RAG system with a local LLM.
         
@@ -58,6 +62,7 @@ class LocalRAGSystem:
         self.path_token_hf = path_token_hf
         self.hf_token = self.load_hf_token() if path_token_hf else None
         self.pad_token_id = None
+        self.debug_print = debug_print
 
         self.MAX_NEW_TOKENS = 512
         self.CHUNK_SIZE = 1000
@@ -66,14 +71,14 @@ class LocalRAGSystem:
         self.CANDIDATE_K_CHUNKS = 50 # Fetch more chunks for re-ranking
         
         try:
-            with open("utils/custom_prompt.txt", "r", encoding="utf-8") as f:
+            with open("src/utils/custom_prompt.txt", "r", encoding="utf-8") as f:
                 self.custom_prompt_template = f.read()
         except UnicodeDecodeError:
             # Fallback for Windows-1252 encoded files
-            with open("utils/custom_prompt.txt", "r", encoding="cp1252") as f:
+            with open("src/utils/custom_prompt.txt", "r", encoding="cp1252") as f:
                 self.custom_prompt_template = f.read()
         except FileNotFoundError:
-            raise FileNotFoundError("utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
+            raise FileNotFoundError("src/utils/custom_prompt.txt file not found. Please create the file with the desired prompt template.")
         
         self.initialize()
 
@@ -170,18 +175,19 @@ class LocalRAGSystem:
         
         # split_documents preserves the metadata (chapter title) from chapter_docs
         final_chunks = text_splitter.split_documents(chapter_docs)
-        
-        print(f"Created {len(final_chunks)} chunks from {len(chapter_docs)} chapters.")
+        if self.debug_print:
+            print(f"Created {len(final_chunks)} chunks from {len(chapter_docs)} chapters.")
         return final_chunks
     
-    def setup_vectorstore(self, texts):
+    def setup_vectorstore(self, texts: List[Document]):
         """
         Set up the vector store with document embeddings using FAISS.
         
         Args:
             texts: list of langchain Document objects (already split)
         """
-        print("Creating embeddings and vector store...")
+        if self.debug_print:
+            print("Creating embeddings and vector store...")
         # Extract text content from Document objects
         self.chunks = [doc.page_content for doc in texts]
         self.chunk_metadatas = [doc.metadata for doc in texts] # Store metadata
@@ -198,10 +204,10 @@ class LocalRAGSystem:
         d = embeddings.shape[1]
         self.index = faiss.IndexFlatL2(d)
         self.index.add(embeddings)
-        
-        print(f"Vector store created with {len(self.chunks)} chunks.")
+        if self.debug_print:
+            print(f"Vector store created with {len(self.chunks)} chunks.")
     
-    def load_local_llm(self, use_gpu=False):
+    def load_local_llm(self):
         """
         Load the local language model using HuggingFace.
         
@@ -210,7 +216,8 @@ class LocalRAGSystem:
         Returns:
             The loaded language model
         """
-        print(f"Loading model: {self.model_name}")
+        if self.debug_print:
+            print(f"Loading model: {self.model_name}")
         try:
             # Attempt to load in 4-bit to save VRAM (fits easily in 16GB)
             quantization_config = BitsAndBytesConfig(
@@ -218,10 +225,12 @@ class LocalRAGSystem:
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_quant_type="nf4"
             )
-            print("Attempting to load model with 4-bit quantization...")
+            if self.debug_print:
+                print("Attempting to load model with 4-bit quantization...")
             tokenizer = AutoTokenizer.from_pretrained(self.model_name,
                                                       token=self.hf_token)
-            print("Tokenizer loaded successfully.")
+            if self.debug_print:
+                print("Tokenizer loaded successfully.")
             # Initialize pipeline
             qa_pipeline = pipeline(
                 "text-generation",
@@ -238,10 +247,12 @@ class LocalRAGSystem:
                 top_p=0.9
             )
             self.pad_token_id = tokenizer.pad_token_id
-            print("Model loaded successfully with 4-bit quantization!")
+            if self.debug_print:
+                print("Model loaded successfully with 4-bit quantization!")
         except Exception as e:
-            print(f"Failed to load 4-bit model: {e}")
-            print("Falling back to standard loading (might require more VRAM)...")
+            if self.debug_print:
+                print(f"Failed to load 4-bit model: {e}")
+                print("Falling back to standard loading (might require more VRAM)...")
             # Fallback to fp16 if 4-bit fails (might OOM on 16GB depending on context)
             qa_pipeline = pipeline(
                 "text-generation",
@@ -255,7 +266,8 @@ class LocalRAGSystem:
                 do_sample=True,
                 temperature=0.6
             )
-            print("Model loaded successfully (fp16)!")
+            if self.debug_print:
+                print("Model loaded successfully (fp16)!")
 
         return qa_pipeline
     
@@ -266,8 +278,9 @@ class LocalRAGSystem:
         texts = self.load_documents()
         self.docs = texts 
         self.setup_vectorstore(texts)
-        self.qa_pipeline = self.load_local_llm(self.use_gpu)
-        print("RAG system initialized successfully!")
+        self.qa_pipeline = self.load_local_llm()
+        if self.debug_print:
+            print("RAG system initialized successfully!")
         
     def query(self, question: str, chapter_max: int = None, debug_print: bool = False) -> Dict:
         """
@@ -283,6 +296,8 @@ class LocalRAGSystem:
             raise ValueError("RAG system not initialized. Call initialize() first.")
             
         # Search
+        if debug_print:
+            print(f"Querying for question: {question} with chapter_max={chapter_max}")
         q_emb = self.embedder.encode([question])
 
 
@@ -302,16 +317,13 @@ class LocalRAGSystem:
             # Slice the embeddings and create a temporary index
             # This ensures we ONLY search within the allowed scope
             subset_embeddings = self.embeddings[:cutoff_index]
-            
             d = subset_embeddings.shape[1]
             search_index = faiss.IndexFlatL2(d)
             search_index.add(subset_embeddings)
-            
             k = min(self.CANDIDATE_K_CHUNKS, cutoff_index)
             D, I = search_index.search(q_emb, k)
             # Retrieve chunks from the subset (indices match self.chunks[:cutoff_index])
             retrieved_chunks = [self.chunks[i] for i in I[0]]
-            
         else:
             # Full search
             k = min(self.CANDIDATE_K_CHUNKS, len(self.chunks))
@@ -328,7 +340,6 @@ class LocalRAGSystem:
             if chunk not in seen:
                 unique_chunks.append(chunk)
                 seen.add(chunk)
-        
         # Re-ranking
         if unique_chunks:
             pairs = [[question, chunk] for chunk in unique_chunks]
@@ -366,6 +377,11 @@ class LocalRAGSystem:
         )
         if debug_print:
             print(f"Raw model output: {outputs}")
-        generated_text = outputs[0]['generated_text'][-1]['content']
+        try:
+            generated_text = outputs[0]['generated_text'][-1]['content']
+        except (IndexError, KeyError, TypeError) as e:
+            print(f"Error extracting response from model output: {e}")
+            print(f"Raw outputs: {outputs}")
+            generated_text = "I apologize, but I encountered an error generating the response."
         
         return {"result": generated_text, "source_documents": final_chunks}

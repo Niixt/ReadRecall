@@ -16,3 +16,5 @@ ipywidgets
 libmagic 
 langchain_chroma
 tqdm
+gradio
+bitsandbytes

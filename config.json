@@ -8,5 +8,8 @@
         "llm": "meta-llama/Meta-Llama-3-8B-Instruct",
         "embeddings": "sentence-transformers/all-MiniLM-L6-v2",
         "reranker": "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    },
+    "running_mode": {
+        "local": false
     }
 }

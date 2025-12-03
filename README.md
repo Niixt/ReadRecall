@@ -1,3 +1,13 @@
+---
+title: ReadRecall
+app_file: src/app.py
+sdk: gradio
+sdk_version: 6.0.0
+hf_oauth: true
+
+hf_oauth_scopes:
+ - inference-api
+---
 # ReadRecall
 
 **ReadRecall** is an innovative application designed to enhance your reading experience by allowing you to **ask questions about the book you're currently reading without spoiling** any plot details. Utilizing advanced Large Language Models (LLM) and Retrieval-Augmented Generation (RAG) techniques, ReadRecall provides context-aware answers based on the specific chapter you are in.
@@ -7,6 +17,11 @@
 - **Spoiler-Free Responses**: Get answers that respect your reading progress, ensuring no spoilers.
 - **LLM Integration**: Leverages powerful language models to understand and respond to your queries effectively.
 - **RAG Technology**: Combines retrieval of relevant information with generation capabilities for accurate and informative answers.
+
+
+## Try it on Hugging Face Spaces
+
+[![Open in Space](https://img.shields.io/badge/Open%20in-HuggingFace%20Spaces-red?logo=HuggingFace)](https://huggingface.co/spaces/Niixt/ReadRecall)
 
 ## Installation
 To install and run ReadRecall, follow these steps:

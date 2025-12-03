@@ -29,30 +29,36 @@ subprocess.Popen = SafePopen
 os.environ["BITSANDBYTES_NOWELCOME"] = "1"
 
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
+# from langchain.text_splitter import RecursiveCharacterTextSplitter
+# from langchain.docstore.document import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from transformers import AutoTokenizer, pipeline, AutoModelForCausalLM, BitsAndBytesConfig, logging as transformers_logging
-
+from huggingface_hub import InferenceClient
 
 class LocalRAGSystem:
     def __init__(self,
                  path_documents: str,
-                 path_token_hf: str,
                  path_custom_prompt: str,
                  model_name: str,
                  model_name_embeddings: str,
                  model_name_reranker: str,
+                 path_token_hf: str = None,
+                 hf_token_str: str = None,
+                 run_local: bool = False,
                  debug_print: bool = False):
         """
         Initialize the RAG system with a local LLM.
         
         Args:
             path_documents: Path to documents for the knowledge base
-            path_token_hf: Path to the file containing the HuggingFace token
             path_custom_prompt: Path to the custom prompt template file
             model_name: Name of the HuggingFace model to use
             model_name_embeddings: Name of the sentence transformer model for embeddings
             model_name_reranker: Name of the cross-encoder model for re-ranking
+            path_token_hf: Path to the file containing the HuggingFace token (optional)
+            hf_token_str: The HuggingFace token as a string (optional, takes precedence over path)
+            run_local: Whether to run the model locally or use InferenceClient
             debug_print: Whether to print debug information
         """
         
@@ -63,6 +69,7 @@ class LocalRAGSystem:
         self.chunk_metadatas = []
         self.embeddings = None
         self.qa_pipeline = None
+        self.run_local = run_local
         
         embed_model = model_name_embeddings
         rerank_model = model_name_reranker
@@ -72,7 +79,13 @@ class LocalRAGSystem:
         self.use_gpu = torch.cuda.is_available()
         
         self.path_token_hf = path_token_hf
-        self.hf_token = self.load_hf_token() if self.path_token_hf else None
+        if hf_token_str:
+            self.hf_token = hf_token_str
+        elif self.path_token_hf:
+            self.hf_token = self.load_hf_token()
+        else:
+            self.hf_token = None
+            
         self.pad_token_id = None
         self.debug_print = debug_print
 
@@ -221,17 +234,15 @@ class LocalRAGSystem:
         if self.debug_print:
             print(f"Vector store created with {len(self.chunks)} chunks.")
     
-    def load_local_llm(self):
+    def load_transformers_pipeline(self):
         """
-        Load the local language model using HuggingFace.
+        Load the local language model using HuggingFace Transformers.
         
-        Args:
-            use_gpu: Whether to use GPU if available
         Returns:
-            The loaded language model
+            The loaded language model pipeline
         """
         if self.debug_print:
-            print(f"Loading model: {self.model_name}")
+            print(f"Loading model locally: {self.model_name}")
         try:
             # Attempt to load in 4-bit to save VRAM (fits easily in 16GB)
             quantization_config = BitsAndBytesConfig(
@@ -284,6 +295,25 @@ class LocalRAGSystem:
                 print("Model loaded successfully (fp16)!")
 
         return qa_pipeline
+
+    def load_inference_client(self):
+        """
+        Load the Inference Client for HuggingFace.
+        
+        Returns:
+            The loaded inference client
+        """
+        if self.debug_print:
+            print(f"Loading Inference Client for model: {self.model_name}")
+        
+        try:
+            client = InferenceClient(token=self.hf_token, model=self.model_name)
+            if self.debug_print:
+                print("Inference Client initialized successfully.")
+            return client
+        except Exception as e:
+            print(f"Error initializing Inference Client: {e}")
+            raise e
     
     def initialize(self):
         """
@@ -292,11 +322,16 @@ class LocalRAGSystem:
         texts = self.load_documents()
         self.docs = texts 
         self.setup_vectorstore(texts)
-        self.qa_pipeline = self.load_local_llm()
+        
+        if self.run_local:
+            self.qa_pipeline = self.load_transformers_pipeline()
+        else:
+            self.qa_pipeline = self.load_inference_client()
+            
         if self.debug_print:
             print("RAG system initialized successfully!")
         
-    def query(self, question: str, chapter_max: int = None, debug_print: bool = False) -> Dict:
+    def query(self, question: str, chapter_max: int = None) -> Dict:
         """
         Query the RAG system.
         
@@ -310,7 +345,7 @@ class LocalRAGSystem:
             raise ValueError("RAG system not initialized. Call initialize() first.")
             
         # Search
-        if debug_print:
+        if self.debug_print:
             print(f"Querying for question: {question} with chapter_max={chapter_max}")
         q_emb = self.embedder.encode([question])
 
@@ -343,7 +378,7 @@ class LocalRAGSystem:
             k = min(self.CANDIDATE_K_CHUNKS, len(self.chunks))
             D, I = self.index.search(q_emb, k)
             retrieved_chunks = [self.chunks[i] for i in I[0]]
-        if debug_print:
+        if self.debug_print:
             print(f"Retrieved indices: {I}")
         
         
@@ -364,7 +399,7 @@ class LocalRAGSystem:
             
             # Take top K
             final_chunks = [chunk for chunk, score in scored_chunks[:self.TOP_K_CHUNKS]]
-            if debug_print:
+            if self.debug_print:
                 print("Re-ranking scores:")
                 for chunk, score in scored_chunks[:self.TOP_K_CHUNKS]:
                     print(f"Score: {score:.4f} | Chunk: {chunk[:50]}...")
@@ -372,7 +407,7 @@ class LocalRAGSystem:
             final_chunks = []
         
         relevant_context = "\n\n...\n\n".join(final_chunks)
-        if debug_print:
+        if self.debug_print:
             print(f"Relevant context for question:\n{relevant_context}")
         # Construct prompt using Llama 3 chat template forma
         messages = [
@@ -381,21 +416,45 @@ class LocalRAGSystem:
         ]
         
         # Generate
-        outputs = self.qa_pipeline(
-            messages,
-            pad_token_id=self.pad_token_id if self.pad_token_id is not None else 0,
-            max_new_tokens=self.MAX_NEW_TOKENS,
-            do_sample=True,
-            temperature=0.6,
-            top_p=0.9
-        )
-        if debug_print:
-            print(f"Raw model output: {outputs}")
         try:
-            generated_text = outputs[0]['generated_text'][-1]['content']
-        except (IndexError, KeyError, TypeError) as e:
-            print(f"Error extracting response from model output: {e}")
-            print(f"Raw outputs: {outputs}")
+            if self.run_local:
+                # Use transformers pipeline
+                outputs = self.qa_pipeline(
+                    messages,
+                    pad_token_id=self.pad_token_id if self.pad_token_id is not None else 0,
+                    max_new_tokens=self.MAX_NEW_TOKENS,
+                    do_sample=True,
+                    temperature=0.6,
+                    top_p=0.9
+                )
+                if self.debug_print:
+                    print(f"Raw model output: {outputs}")
+                try:
+                    generated_text = outputs[0]['generated_text'][-1]['content']
+                except (IndexError, KeyError, TypeError) as e:
+                    print(f"Error extracting response from model output: {e}")
+                    generated_text = "I apologize, but I encountered an error generating the response."
+            else:
+                # Use InferenceClient
+                response = ""
+                for message in self.qa_pipeline.chat_completion(
+                    messages,
+                    max_tokens=self.MAX_NEW_TOKENS,
+                    stream=True,
+                    temperature=0.6,
+                    top_p=0.9,
+                ):
+                    choices = message.choices
+                    token = ""
+                    if len(choices) and choices[0].delta.content:
+                        token = choices[0].delta.content
+                    response += token
+                
+                generated_text = response
+            
+        except Exception as e:
+            print(f"Error generating response: {e}")
+            traceback.print_exc()
             generated_text = "I apologize, but I encountered an error generating the response."
         
         return {"result": generated_text, "source_documents": final_chunks}

@@ -102,16 +102,16 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
     
     return status_msg, True
 
-def chat_response(message : str, history : list, chapter_limit : int | None = None, debug_print : bool = False):
+def chat_response(message : str, history : list, chapter_limit : int | None = None):
     global rag_system
     if not rag_system:
         return "System not initialized. Please load a book first."
     
     try:
-        if debug_print:
+        if rag_system.debug_print:
             print(f"Received message: {message} of type: {type(message)}")
 
-        result = rag_system.query(message, chapter_max=chapter_limit, debug_print=debug_print)
+        result = rag_system.query(message, chapter_max=chapter_limit)
 
         return result['result']
     except Exception as e:

@@ -3,11 +3,12 @@ import os
 import sys
 import traceback
 
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Add the current directory to sys.path to ensure imports work correctly
+# Add the src directory to sys.path to ensure imports work correctly
 current_dir = os.path.dirname(os.path.abspath(__file__))
+# src_dir = os.path.join(current_dir, "src")
+# sys.path.append(src_dir)
 sys.path.append(current_dir)
 
 import loaders.book_content_loader as bcl
@@ -19,12 +20,21 @@ rag_system = None
 config = load_config()
 
 def search_and_load_book(book_name : str,
+                         oauth_token: gr.OAuthToken | None,
                          progress : gr.Progress = gr.Progress()) -> tuple[str, gr.update, gr.update]:
     global rag_system
     global config
         
     if not book_name:
         return "Please enter a book name.", gr.update(visible=False), gr.update(visible=False)
+
+    # Get token from OAuth
+    token_str = None
+    if oauth_token and oauth_token.token:
+        token_str = oauth_token.token
+    
+    if not token_str and not config['running_mode']['local']:
+        print("Warning: No OAuth token found. Ensure you are logged in if using gated models.")
 
     progress(0.1, desc="Searching for book...")
     try:
@@ -61,21 +71,22 @@ def search_and_load_book(book_name : str,
 
     progress(0.6, desc="Initializing RAG System (Loading Model)...")
     
-    # Path to HF token
-    token_path = config['paths']['hf_token']
-    
     try:
         # Initialize RAG
         rag_system = rr.LocalRAGSystem(
             path_documents=file_path,
-            path_token_hf=token_path,
+            path_token_hf=config['paths']['hf_token'],
+
             path_custom_prompt=config['paths']['custom_prompt'],
             model_name=config['models']['llm'],
             model_name_embeddings=config['models']['embeddings'],
             model_name_reranker=config['models']['reranker'],
+            hf_token_str=token_str,
+            run_local=config['running_mode']['local'],
             debug_print=False
         )
     except Exception as e:
+        traceback.print_exc()
         return f"Error initializing RAG system: {e}", gr.update(visible=False), gr.update(visible=False)
 
     progress(0.9, desc="Analyzing chapters...")
@@ -97,16 +108,13 @@ def search_and_load_book(book_name : str,
     # Update slider and show chat
     return status_msg, gr.update(maximum=max_chapter, value=max_chapter, visible=True), gr.update(visible=True)
 
-def chat_response(message: list, chapter_limit: int | None, debug_print : bool = False) -> str:
+def chat_response(message: list, chapter_limit: int | None) -> str:
     global rag_system
     if not rag_system:
         return "System not initialized. Please load a book first."
     
     try:
-        if type(message) is str:
-            result = rag_system.query(message, chapter_max=chapter_limit)
-        else:
-            result = rag_system.query(message[-1]['text'], chapter_max=chapter_limit, debug_print=debug_print)
+        result = rag_system.query(message[-1]['text'] if isinstance(message[-1], dict) else message[-1], chapter_max=chapter_limit)
         return result['result']
     except Exception as e:
         print(f"Error in chat_response: {e}")
@@ -117,6 +125,10 @@ def chat_response(message: list, chapter_limit: int | None, debug_print : bool =
 with gr.Blocks(title="ReadRecall") as demo:
     gr.Markdown("# ReadRecall Application")
     
+    if not config['running_mode']['local']:
+        with gr.Row():
+            gr.LoginButton()
+
     with gr.Row():
         with gr.Column(scale=1):
             book_input = gr.Textbox(label="Book Name", placeholder="Enter book title (e.g., Martin Eden)")
@@ -135,7 +147,10 @@ with gr.Blocks(title="ReadRecall") as demo:
             )
 
         with gr.Column(scale=2, visible=False) as chat_column:
-            chatbot = gr.Chatbot(height=600, label="Chat with Book")
+            chatbot = gr.Chatbot(height=600,
+                                 label="Chat with Book",
+                                #  type="messages"
+                                )
             msg = gr.Textbox(label="Ask a question", placeholder="Type your question here...")
             clear = gr.Button("Clear Chat")
 
@@ -161,9 +176,9 @@ with gr.Blocks(title="ReadRecall") as demo:
     clear.click(lambda: None, None, chatbot, queue=False)
 
 if __name__ == "__main__":
-    demo.launch(
-        share=True
-    )
+    demo.launch()
+
 
 
 # Takes about 8min (467s) to generate answer with gradio
+# Fix with fast api

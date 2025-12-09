@@ -123,41 +123,42 @@ def chat_response(message: list, chapter_limit: int | None) -> str:
 
 # Gradio Interface
 with gr.Blocks(title="ReadRecall") as demo:
-    gr.Markdown("# ReadRecall Application")
-    
-    if not config['running_mode']['local']:
-        if "SPACE_HOST" in os.environ:
-            space_host = os.environ.get("SPACE_HOST")
-            direct_url = f"https://{space_host}"
-            gr.Markdown(f"**Note:** If you are experiencing login loops (especially on mobile), please use the [direct link]({direct_url}) (open in a new tab).")
-
-        with gr.Row():
-            gr.LoginButton()
+    gr.Markdown("# ReadRecall")
+    login_msg = gr.Markdown("You will need to login to use the application.")
+    if "SPACE_HOST" in os.environ:
+        space_host = os.environ.get("SPACE_HOST")
+        direct_url = f"https://{space_host}"
+        gr.Markdown(f"**Note:** If you are experiencing login loops (especially on mobile), please use the [direct link]({direct_url}) (open in a new tab).")
 
     with gr.Row():
-        with gr.Column(scale=1):
-            book_input = gr.Textbox(label="Book Name", placeholder="Enter book title (e.g., Martin Eden)")
-            search_button = gr.Button("Search & Load", variant="primary")
-            status_output = gr.Textbox(label="Status", interactive=False)
-            
-            # Slider initially hidden
-            chapter_slider = gr.Slider(
-                minimum=1, 
-                maximum=100, 
-                value=1, 
-                step=1, 
-                label="Chapter Limit", 
-                visible=False,
-                info="Limit the context to the first N chapters."
-            )
+        gr.LoginButton()
 
-        with gr.Column(scale=2, visible=False) as chat_column:
-            chatbot = gr.Chatbot(height=600,
-                                 label="Chat with Book",
-                                #  type="messages"
-                                )
-            msg = gr.Textbox(label="Ask a question", placeholder="Type your question here...")
-            clear = gr.Button("Clear Chat")
+    with gr.Group(visible=False) as main_layout:
+        with gr.Row():
+            with gr.Column(scale=1):
+                book_input = gr.Textbox(label="Book Name", placeholder="Enter book title (e.g., Martin Eden)")
+                # make the search button click twice when pressed
+                search_button = gr.Button("Search & Load", variant="primary")
+                status_output = gr.Textbox(label="Status", interactive=False)
+                
+                # Slider initially hidden
+                chapter_slider = gr.Slider(
+                    minimum=1, 
+                    maximum=10, 
+                    value=1, 
+                    step=1, 
+                    label="Chapter Limit", 
+                    visible=False,
+                    info="Limit the context to the first N chapters."
+                )
+
+            with gr.Column(scale=2, visible=False) as chat_column:
+                chatbot = gr.Chatbot(height=600,
+                                     label="Chat with Book",
+                                    #  type="messages"
+                                    )
+                msg = gr.Textbox(label="Ask a question", placeholder="Type your question here...")
+                clear = gr.Button("Clear Chat")
 
     def user(user_message : str, history : list) -> tuple[str, list]:
         return "", history + [{"role": "user", "content": user_message}]
@@ -179,6 +180,13 @@ with gr.Blocks(title="ReadRecall") as demo:
     )
     
     clear.click(lambda: None, None, chatbot, queue=False)
+
+    def check_login(token: gr.OAuthToken | None):
+        if token and token.token:
+            return gr.update(visible=True), gr.update(visible=False)
+        return gr.update(visible=False), gr.update(visible=True)
+
+    demo.load(fn=check_login, inputs=None, outputs=[main_layout, login_msg])
 
 if __name__ == "__main__":
     # Debugging helper

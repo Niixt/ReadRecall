@@ -106,7 +106,8 @@ def search_and_load_book(book_name : str,
     status_msg = f"Loaded '{book_name}'. Found {max_chapter} chapters."
     
     # Update slider and show chat
-    return status_msg, gr.update(maximum=max_chapter, value=max_chapter, visible=True), gr.update(visible=True)
+    new_slider_config = {"maximum": max_chapter, "value": 1, "visible": True}
+    return status_msg, new_slider_config, 1, gr.update(visible=True)
 
 def chat_response(message: list, chapter_limit: int | None) -> str:
     global rag_system
@@ -141,16 +142,26 @@ with gr.Blocks(title="ReadRecall") as demo:
                 search_button = gr.Button("Search & Load", variant="primary")
                 status_output = gr.Textbox(label="Status", interactive=False)
                 
-                # Slider initially hidden
-                chapter_slider = gr.Slider(
-                    minimum=1, 
-                    maximum=10, 
-                    value=1, 
-                    step=1, 
-                    label="Chapter Limit", 
-                    visible=False,
-                    info="Limit the context to the first N chapters."
-                )
+                # Store slider config in state to trigger re-render
+                slider_state = gr.State({"maximum": 100, "value": 1, "visible": False})
+                slider_value = gr.State(1)
+                
+                @gr.render(inputs=[slider_state])
+                def render_slider(config):
+                    s = gr.Slider(
+                        minimum=1,
+                        maximum=config["maximum"],
+                        value=config["value"],
+                        step=1,
+                        label="Chapter Limit",
+                        visible=config["visible"],
+                        info="Limit the context to the first N chapters.",
+                        elem_id="chapter_slider",
+                        interactive=True
+                    )
+                    s.change(lambda x: x, s, slider_value)
+                
+                search_state = gr.State()
 
             with gr.Column(scale=2, visible=False) as chat_column:
                 chatbot = gr.Chatbot(height=600,
@@ -172,11 +183,11 @@ with gr.Blocks(title="ReadRecall") as demo:
     search_button.click(
         fn=search_and_load_book,
         inputs=[book_input],
-        outputs=[status_output, chapter_slider, chat_column]
+        outputs=[status_output, slider_state, slider_value, chat_column]
     )
     
     msg.submit(user, [msg, chatbot], [msg, chatbot], queue=False).then(
-        bot, [chatbot, chapter_slider], chatbot
+        bot, [chatbot, slider_value], chatbot
     )
     
     clear.click(lambda: None, None, chatbot, queue=False)
@@ -194,8 +205,6 @@ if __name__ == "__main__":
         print(f"SPACE_HOST: {os.environ['SPACE_HOST']}")
         
     demo.launch(ssr_mode=False)
-
-
 
 # Takes about 8min (467s) to generate answer with gradio
 # Fix with fast api

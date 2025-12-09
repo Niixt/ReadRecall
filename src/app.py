@@ -126,6 +126,11 @@ with gr.Blocks(title="ReadRecall") as demo:
     gr.Markdown("# ReadRecall Application")
     
     if not config['running_mode']['local']:
+        if "SPACE_HOST" in os.environ:
+            space_host = os.environ.get("SPACE_HOST")
+            direct_url = f"https://{space_host}"
+            gr.Markdown(f"**Note:** If you are experiencing login loops (especially on mobile), please use the [direct link]({direct_url}) (open in a new tab).")
+
         with gr.Row():
             gr.LoginButton()
 
@@ -176,7 +181,11 @@ with gr.Blocks(title="ReadRecall") as demo:
     clear.click(lambda: None, None, chatbot, queue=False)
 
 if __name__ == "__main__":
-    demo.launch()
+    # Debugging helper
+    if "SPACE_HOST" in os.environ:
+        print(f"SPACE_HOST: {os.environ['SPACE_HOST']}")
+        
+    demo.launch(ssr_mode=False)
 
 
 

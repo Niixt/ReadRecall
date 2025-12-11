@@ -39,7 +39,7 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
         pbar.set_description("Getting archive link...")
         url_archive = bcl.get_book_archive_page(res_search)
         if not url_archive:
-            return "No Internet Archive link found for this book.", False
+            return "No Internet Archive link found in any of the search results.", False
         pbar.update(1)
 
         pbar.set_description("Fetching book text...")

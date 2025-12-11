@@ -26,22 +26,43 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
     if not book_name:
         return "Please enter a book name.", False
 
-    with tqdm(total=6, desc="Starting...") as pbar:
-        pbar.set_description("Searching for book...")
-        try:
-            res_search = bcl.search_books(book_name)
-            if not res_search or 'docs' not in res_search or not res_search['docs']:
-                return f"Book '{book_name}' not found.", False
-        except Exception as e:
-            return f"Error searching for book: {e}", False
-        pbar.update(1)
+    print(f"Searching for '{book_name}'...")
+    try:
+        res_search = bcl.search_books(book_name)
+        candidates = bcl.get_book_candidates(res_search)
+        
+        if not candidates:
+             return f"No books found for '{book_name}' with available text.", False
+    except Exception as e:
+        return f"Error searching for book: {e}", False
 
-        pbar.set_description("Getting archive link...")
-        url_archive = bcl.get_book_archive_page(res_search)
-        if not url_archive:
-            return "No Internet Archive link found in any of the search results.", False
-        pbar.update(1)
+    selected_candidate = None
+    if len(candidates) == 1:
+        selected_candidate = candidates[0]
+        print(f"Found 1 book: {selected_candidate['label']}")
+    else:
+        print(f"Found {len(candidates)} books:")
+        for i, cand in enumerate(candidates):
+            print(f"{i+1}. {cand['label']}")
+        
+        while True:
+            try:
+                choice = input(f"Select a book (1-{len(candidates)}) or 'c' to cancel: ")
+                if choice.lower() == 'c':
+                    return "Selection cancelled.", False
+                idx = int(choice) - 1
+                if 0 <= idx < len(candidates):
+                    selected_candidate = candidates[idx]
+                    break
+                else:
+                    print("Invalid selection. Please try again.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
 
+    ia_id = selected_candidate['ia_id']
+    url_archive = bcl.get_book_archive_url(ia_id)
+    
+    with tqdm(total=5, desc="Loading book...") as pbar:
         pbar.set_description("Fetching book text...")
         try:
             book_text = bcl.fetch_book_text(url_archive)
@@ -57,7 +78,7 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
         # Save to file
         documents_dir = config['paths']['documents']
         os.makedirs(documents_dir, exist_ok=True)
-        filename = f"{book_name.replace(' ', '_')}_clean.txt"
+        filename = f"{ia_id}_clean.txt"
         file_path = os.path.join(documents_dir, filename)
         
         with open(file_path, "w", encoding="utf-8") as f:
@@ -99,7 +120,7 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
         pbar.update(1)
         pbar.set_description("Ready!")
     
-    status_msg = f"Loaded '{book_name}'. Found {max_chapter} chapters."
+    status_msg = f"Loaded '{selected_candidate['label']}'. Found {max_chapter} chapters."
     
     return status_msg, True
 

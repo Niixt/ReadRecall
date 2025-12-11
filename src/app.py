@@ -171,7 +171,7 @@ with gr.Blocks(title="ReadRecall") as demo:
     if "SPACE_HOST" in os.environ:
         space_host = os.environ.get("SPACE_HOST")
         direct_url = f"https://{space_host}"
-        gr.Markdown(f"**Note:** If you are experiencing login loops (especially on mobile), please use the [direct link]({direct_url}) (open in a new tab).")
+        gr.Markdown(f"**Note:** If you are experiencing login loops (especially on mobile), please use the <a href='{direct_url}' target='_blank'>direct link</a> (open in a new tab).")
 
     with gr.Row():
         gr.LoginButton()
@@ -179,7 +179,7 @@ with gr.Blocks(title="ReadRecall") as demo:
     with gr.Group(visible=False) as main_layout:
         with gr.Row():
             with gr.Column(scale=1):
-                book_input = gr.Textbox(label="Search book", placeholder="Enter book title (e.g., Martin Eden) or author", info=f"Note that only books with full text available on [Internet Archive](https://archive.org/) can be loaded.")
+                book_input = gr.Textbox(label="Search book", placeholder="Enter book title (e.g., Martin Eden) or author", info="Note that only books with full text available on <a href='https://archive.org/' target='_blank'>Internet Archive</a> can be loaded.")
                 search_button = gr.Button("Search", variant="primary")
                 
                 book_dropdown = gr.Dropdown(label="Select Book", visible=True, interactive=True)

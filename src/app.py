@@ -129,18 +129,40 @@ def load_book_step(ia_id: str, books_map: dict, oauth_token: gr.OAuthToken | Non
     new_slider_config = {"maximum": max_chapter, "value": 1, "visible": True}
     return status_msg, new_slider_config, 1, gr.update(visible=True)
 
-def chat_response(message: list, chapter_limit: int | None) -> str:
+def chat_response(message: str | list, chapter_limit: int | None) -> tuple[str, list]:
     global rag_system
     if not rag_system:
-        return "System not initialized. Please load a book first."
+        return "System not initialized. Please load a book first.", []
     
     try:
-        result = rag_system.query(message[-1]['text'] if isinstance(message[-1], dict) else message[-1], chapter_max=chapter_limit)
-        return result['result']
+        # Handle input being a string or a list of messages
+        query_text = message
+        if isinstance(message, list):
+            last_msg = message[-1]
+            if isinstance(last_msg, dict):
+                query_text = last_msg.get('content') or last_msg.get('text')
+            else:
+                query_text = last_msg
+        
+        result = rag_system.query(query_text, chapter_max=chapter_limit)
+        return result['result'], result['source_documents']
     except Exception as e:
         print(f"Error in chat_response: {e}")
         traceback.print_exc()
-        return f"Error during query: {e}"
+        return f"Error during query: {e}", []
+
+def chat_interface_fn(message, history, chapter_limit):
+    bot_message, sources = chat_response(message, chapter_limit)
+    
+    if sources:
+        bot_message += "\n\n<details><summary><b>Source Chunks</b></summary>\n\n"
+        for i, source in enumerate(sources):
+            # Clean up newlines for better markdown rendering in blockquotes
+            clean_source = source.replace('\n', ' ')
+            bot_message += f"**Chunk {i+1}:**\n> {clean_source}\n\n"
+        bot_message += "</details>"
+        
+    return bot_message
 
 # Gradio Interface
 with gr.Blocks(title="ReadRecall") as demo:
@@ -157,7 +179,7 @@ with gr.Blocks(title="ReadRecall") as demo:
     with gr.Group(visible=False) as main_layout:
         with gr.Row():
             with gr.Column(scale=1):
-                book_input = gr.Textbox(label="Search book by name", placeholder="Enter book title (e.g., Martin Eden)", info="Note that only books with full text available on Internet Archive can be loaded.")
+                book_input = gr.Textbox(label="Search book", placeholder="Enter book title (e.g., Martin Eden) or author", info=f"Note that only books with full text available on [Internet Archive](https://archive.org/) can be loaded.")
                 search_button = gr.Button("Search", variant="primary")
                 
                 book_dropdown = gr.Dropdown(label="Select Book", visible=True, interactive=True)
@@ -188,21 +210,12 @@ with gr.Blocks(title="ReadRecall") as demo:
                 books_state = gr.State({})
 
             with gr.Column(scale=2, visible=False) as chat_column:
-                chatbot = gr.Chatbot(height=600,
-                                     label="Chat with Book",
-                                    #  type="messages"
-                                    )
-                msg = gr.Textbox(label="Ask a question", placeholder="Type your question here...")
-                clear = gr.Button("Clear Chat")
-
-    def user(user_message : str, history : list) -> tuple[str, list]:
-        return "", history + [{"role": "user", "content": user_message}]
-
-    def bot(history: list, chapter_limit: int) -> list:
-        user_message = history[-1]["content"]
-        bot_message = chat_response(user_message, chapter_limit)
-        history.append({"role": "assistant", "content": bot_message})
-        return history
+                gr.ChatInterface(
+                    fn=chat_interface_fn,
+                    additional_inputs=[slider_value],
+                    chatbot=gr.Chatbot(height=600, label="Chat with Book"),
+                    autofocus=True
+                )
 
     search_button.click(
         fn=search_book_step,
@@ -216,12 +229,6 @@ with gr.Blocks(title="ReadRecall") as demo:
         outputs=[status_output, slider_state, slider_value, chat_column]
     )
     
-    msg.submit(user, [msg, chatbot], [msg, chatbot], queue=False).then(
-        bot, [chatbot, slider_value], chatbot
-    )
-    
-    clear.click(lambda: None, None, chatbot, queue=False)
-
     def check_login(token: gr.OAuthToken | None):
         if token and token.token:
             return gr.update(visible=True), gr.update(visible=False)

@@ -92,8 +92,8 @@ class LocalRAGSystem:
         self.MAX_NEW_TOKENS = 512
         self.CHUNK_SIZE = 1000
         self.CHUNK_OVERLAP = 200
-        self.TOP_K_CHUNKS = 10
-        self.CANDIDATE_K_CHUNKS = 50 # Fetch more chunks for re-ranking
+        self.TOP_K_CHUNKS = 20
+        self.CANDIDATE_K_CHUNKS = 100 # Fetch more chunks for re-ranking
         
         prompt_path = path_custom_prompt
         
@@ -406,7 +406,7 @@ class LocalRAGSystem:
         else:
             final_chunks = []
         
-        relevant_context = "\n\n...\n\n".join(final_chunks)
+        relevant_context = "\n\n...\n\n".join(final_chunks) + "\n\n"
         if self.debug_print:
             print(f"Relevant context for question:\n{relevant_context}")
         # Construct prompt using Llama 3 chat template forma
@@ -427,8 +427,7 @@ class LocalRAGSystem:
                     temperature=0.6,
                     top_p=0.9
                 )
-                if self.debug_print:
-                    print(f"Raw model output: {outputs}")
+
                 try:
                     generated_text = outputs[0]['generated_text'][-1]['content']
                 except (IndexError, KeyError, TypeError) as e:

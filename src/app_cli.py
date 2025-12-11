@@ -78,7 +78,8 @@ def search_and_load_book(book_name: str) -> tuple[str, bool]:
                 model_name=config['models']['llm'],
                 model_name_embeddings=config['models']['embeddings'],
                 model_name_reranker=config['models']['reranker'],
-                debug_print=False
+                run_local=config['running_mode']['local'],
+                debug_print=config['running_mode']['debug']
             )
         except Exception as e:
             return f"Error initializing RAG system: {e}", False 

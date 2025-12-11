@@ -102,7 +102,7 @@ def load_book_step(ia_id: str, books_map: dict, oauth_token: gr.OAuthToken | Non
             model_name_reranker=config['models']['reranker'],
             hf_token_str=token_str,
             run_local=config['running_mode']['local'],
-            debug_print=False
+            debug_print=config['running_mode']['debug']
         )
     except Exception as e:
         traceback.print_exc()

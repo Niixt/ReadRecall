@@ -36,6 +36,17 @@ def get_book_cover(value: str, key_type='olid', size='M') -> str:
     url = f"https://covers.openlibrary.org/b/{key_type}/{value}-{size}.jpg"
     return url
 
+def get_book_archive_url(identifier: str) -> str:
+    """
+    Get the Internet Archive URL for a book given its identifier.
+    Args:
+        identifier (str): The Internet Archive identifier for the book.
+    Returns:
+        str: The URL of the book on Internet Archive.
+    """
+    base_url_archive = "https://archive.org/details/"
+    return base_url_archive + identifier
+
 def get_book_archive_page(json_result: dict) -> str | None:
     """
     Get the Internet Archive URL for the first book in the search results.
@@ -50,10 +61,66 @@ def get_book_archive_page(json_result: dict) -> str | None:
     # Take the first result 
     if 'docs' not in json_result or len(json_result['docs']) == 0:
         return None
-    ia_list = json_result['docs'][0].get('ia', [])
-    if ia_list == []:
-        return None
-    return base_url_archive + ia_list[0]
+    
+    # Find the first book with an Internet Archive identifier
+    for doc in json_result['docs']:
+        ia_list = doc.get('ia', [])
+        if ia_list:
+            return base_url_archive + ia_list[0]
+            
+    return None
+
+def get_book_candidates(json_result: dict) -> List[dict]:
+    """
+    Extract available books with Internet Archive IDs from search results.
+    Args:
+        json_result (dict): The JSON response from the Open Library search API.
+    Returns:
+        List[dict]: A list of dictionaries containing book metadata and IA ID.
+    """
+    candidates = []
+    if 'docs' not in json_result:
+        return candidates
+    
+    for doc in json_result['docs']:
+        ia_list = doc.get('ia', [])
+        if ia_list:
+            # Use the first IA ID
+            ia_id = ia_list[0]
+            if is_full_text_available(f"https://archive.org/details/{ia_id}") is None:
+                continue  # skip if no text found
+            title = doc.get('title', 'Unknown Title')
+            author_name = doc.get('author_name', ['Unknown Author'])
+            author = author_name[0] if author_name else 'Unknown Author'
+            year = doc.get('first_publish_year', 'N/A')
+            
+            candidates.append({
+                'label': f"{title} ({year}) by {author}",
+                'ia_id': ia_id,
+                'title': title,
+                'value': ia_id # For Gradio Dropdown
+            })
+    return candidates
+
+def is_full_text_available(url_archive: str) -> None | str:
+    """
+    Check if full text is available for a book on its Internet Archive page.
+    Args:
+        url_archive (str): The URL of the book on Internet Archive.
+    Returns:
+        None or str: The URL of the full text if available, else None.
+    """
+    response_archive_page = requests.get(url_archive)
+    response_archive_page.raise_for_status()  # Check for download errors
+
+    soup_archive_page = BeautifulSoup(response_archive_page.content, 'html.parser')
+    # Find the FULL TEXT (txt) link
+    content_div = soup_archive_page.find_all('a', class_='format-summary download-pill')
+
+    for link in content_div:
+        if 'FULL TEXT' in link.text:
+            return link.get('href')
+    return None
 
 def fetch_book_text(url_archive: str, debug_print: bool = False) -> str | None:
     """
@@ -63,20 +130,10 @@ def fetch_book_text(url_archive: str, debug_print: bool = False) -> str | None:
     Returns:
         str or None: The full text of the book, or None if not found.
     """
-    response_archive_page = requests.get(url_archive)
-    response_archive_page.raise_for_status()  # Check for download errors
-
-    soup_archive_page = BeautifulSoup(response_archive_page.content, 'html.parser')
-    # Find the FULL TEXT (txt) link
-    content_div = soup_archive_page.find_all('a', class_='format-summary download-pill')
-
-    url_full_text = None
-    for link in content_div:
-        if 'FULL TEXT' in link.text:
-            url_full_text = link.get('href')
-            break
-    if not url_full_text:
+    url_full_text = is_full_text_available(url_archive)
+    if url_full_text is None:
         return None
+    
     if not url_full_text.startswith('http'):
         url_full_text = "https://archive.org" + url_full_text
     

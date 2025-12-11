@@ -19,14 +19,42 @@ from utils.config_loader import load_config
 rag_system = None
 config = load_config()
 
-def search_and_load_book(book_name : str,
-                         oauth_token: gr.OAuthToken | None,
-                         progress : gr.Progress = gr.Progress()) -> tuple[str, gr.update, gr.update]:
+def search_book_step(book_name: str) -> tuple[str, gr.update, gr.update, dict]:
+    if not book_name:
+        return "Please enter a book name.", gr.update(visible=False, choices=[]), gr.update(visible=False), {}
+    
+    # progress(0.1, desc="Searching for book...")
+    try:
+        res_search = bcl.search_books(book_name)
+        candidates = bcl.get_book_candidates(res_search)
+        
+        if not candidates:
+             return f"No books found for '{book_name}' with available text.", gr.update(visible=False, choices=[]), gr.update(visible=False), {}
+        
+        # Prepare choices for dropdown: list of (label, value) tuples
+        choices = [(c['label'], c['ia_id']) for c in candidates]
+        books_map = {c['ia_id']: c['label'] for c in candidates}
+
+        if len(candidates) == 1:
+            output_message = f"Found 1 book. Make sure it is the one you searched for."
+        else:
+            output_message = f"Found {len(candidates)} books. Please select one."
+
+        return output_message, gr.update(visible=True, choices=choices, value=choices[0][1]), gr.update(visible=True), books_map
+
+    except Exception as e:
+        return f"Error searching for book: {e}", gr.update(visible=False, choices=[]), gr.update(visible=False), {}
+
+
+def load_book_step(ia_id: str, books_map: dict, oauth_token: gr.OAuthToken | None, progress: gr.Progress = gr.Progress()) -> tuple[str, dict, int, gr.update]:
     global rag_system
     global config
-        
-    if not book_name:
-        return "Please enter a book name.", gr.update(visible=False), gr.update(visible=False)
+    
+    # Default slider state (hidden)
+    default_slider = {"visible": False, "maximum": 100, "value": 1}
+    
+    if not ia_id:
+        return "Please select a book.", default_slider, 1, gr.update(visible=False)
 
     # Get token from OAuth
     token_str = None
@@ -36,26 +64,17 @@ def search_and_load_book(book_name : str,
     if not token_str and not config['running_mode']['local']:
         print("Warning: No OAuth token found. Ensure you are logged in if using gated models.")
 
-    progress(0.1, desc="Searching for book...")
-    try:
-        res_search = bcl.search_books(book_name)
-        if not res_search or 'docs' not in res_search or not res_search['docs']:
-            return f"Book '{book_name}' not found.", gr.update(visible=False), gr.update(visible=False)
-    except Exception as e:
-        return f"Error searching for book: {e}", gr.update(visible=False), gr.update(visible=False)
-
     progress(0.2, desc="Getting archive link...")
-    url_archive = bcl.get_book_archive_page(res_search)
-    if not url_archive:
-        return "No Internet Archive link found for this book.", gr.update(visible=False), gr.update(visible=False)
-
+    
+    url_archive = bcl.get_book_archive_url(ia_id)
+    
     progress(0.3, desc="Fetching book text...")
     try:
         book_text = bcl.fetch_book_text(url_archive)
         if not book_text:
-            return "Could not fetch book text.", gr.update(visible=False), gr.update(visible=False)
+            return "Could not fetch book text.", default_slider, 1, gr.update(visible=False)
     except Exception as e:
-        return f"Error fetching book text: {e}", gr.update(visible=False), gr.update(visible=False)
+        return f"Error fetching book text: {e}", default_slider, 1, gr.update(visible=False)
 
     progress(0.5, desc="Cleaning text...")
     cleaned_text = bcl.clean_book_text(book_text, page_break_token='\f')
@@ -63,7 +82,7 @@ def search_and_load_book(book_name : str,
     # Save to file
     documents_dir = config['paths']['documents']
     os.makedirs(documents_dir, exist_ok=True)
-    filename = f"{book_name.replace(' ', '_')}_clean.txt"
+    filename = f"{ia_id}_clean.txt"
     file_path = os.path.join(documents_dir, filename)
     
     with open(file_path, "w", encoding="utf-8") as f:
@@ -87,7 +106,7 @@ def search_and_load_book(book_name : str,
         )
     except Exception as e:
         traceback.print_exc()
-        return f"Error initializing RAG system: {e}", gr.update(visible=False), gr.update(visible=False)
+        return f"Error initializing RAG system: {e}", default_slider, 1, gr.update(visible=False)
 
     progress(0.9, desc="Analyzing chapters...")
     
@@ -102,8 +121,9 @@ def search_and_load_book(book_name : str,
     max_chapter = max(1, max_chapter)
 
     progress(1.0, desc="Ready!")
-    
-    status_msg = f"Loaded '{book_name}'. Found {max_chapter} chapters."
+
+    book_label = books_map.get(ia_id, ia_id) if books_map else ia_id
+    status_msg = f"Loaded book '{book_label}'. Found {max_chapter} chapters."
     
     # Update slider and show chat
     new_slider_config = {"maximum": max_chapter, "value": 1, "visible": True}
@@ -137,10 +157,13 @@ with gr.Blocks(title="ReadRecall") as demo:
     with gr.Group(visible=False) as main_layout:
         with gr.Row():
             with gr.Column(scale=1):
-                book_input = gr.Textbox(label="Book Name", placeholder="Enter book title (e.g., Martin Eden)")
-                # make the search button click twice when pressed
-                search_button = gr.Button("Search & Load", variant="primary")
-                status_output = gr.Textbox(label="Status", interactive=False)
+                book_input = gr.Textbox(label="Search book by name", placeholder="Enter book title (e.g., Martin Eden)", info="Note that only books with full text available on Internet Archive can be loaded.")
+                search_button = gr.Button("Search", variant="primary")
+                
+                book_dropdown = gr.Dropdown(label="Select Book", visible=True, interactive=True)
+                load_button = gr.Button("Load Selected Book", variant="secondary", visible=False)
+                
+                status_output = gr.Textbox(label="Status", interactive=False, lines=3, value="System not initialized.")
                 
                 # Store slider config in state to trigger re-render
                 slider_state = gr.State({"maximum": 100, "value": 1, "visible": False})
@@ -162,6 +185,7 @@ with gr.Blocks(title="ReadRecall") as demo:
                     s.change(lambda x: x, s, slider_value)
                 
                 search_state = gr.State()
+                books_state = gr.State({})
 
             with gr.Column(scale=2, visible=False) as chat_column:
                 chatbot = gr.Chatbot(height=600,
@@ -181,8 +205,14 @@ with gr.Blocks(title="ReadRecall") as demo:
         return history
 
     search_button.click(
-        fn=search_and_load_book,
+        fn=search_book_step,
         inputs=[book_input],
+        outputs=[status_output, book_dropdown, load_button, books_state]
+    )
+
+    load_button.click(
+        fn=load_book_step,
+        inputs=[book_dropdown, books_state],
         outputs=[status_output, slider_state, slider_value, chat_column]
     )
     
@@ -200,10 +230,6 @@ with gr.Blocks(title="ReadRecall") as demo:
     demo.load(fn=check_login, inputs=None, outputs=[main_layout, login_msg])
 
 if __name__ == "__main__":
-    # Debugging helper
-    if "SPACE_HOST" in os.environ:
-        print(f"SPACE_HOST: {os.environ['SPACE_HOST']}")
-        
     demo.launch(ssr_mode=False)
 
 # Takes about 8min (467s) to generate answer with gradio

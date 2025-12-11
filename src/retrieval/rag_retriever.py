@@ -137,7 +137,7 @@ class LocalRAGSystem:
         Splits the full text into chapter-level Documents.
         Handles: "Chapter 1", "CHAPTER IV", "IV", "1", "Part One", etc.
         """
-        pattern = r'(?m)^\s*((?:CHAPTER|Chapter|chapter|PART|Part|part|BOOK|Book|book)\s+(?:[IVXLCDM]+|\d+|[A-Za-z]+)|(?:[IVXLCDM]+)|(?:\d+))\s*$'
+        pattern = r'(?m)^\s*((?:(?:CHAPTER|Chapter|chapter|PART|Part|part|BOOK|Book|book)\s+(?:[IVXLCDM]+|\d+|[A-Za-z]+)|(?:[IVXLCDM]+)|(?:\d+))\.?)\s*$'
         
         matches = list(re.finditer(pattern, text))
         

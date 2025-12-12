@@ -18,3 +18,5 @@ langchain_chroma
 tqdm
 gradio
 bitsandbytes
+translators
+langdetect

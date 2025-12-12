@@ -2,6 +2,8 @@ import os
 import sys
 import subprocess
 import traceback
+from langdetect import detect
+import translators as ts
 from typing import List, Dict
 import torch
 import re
@@ -132,13 +134,44 @@ class LocalRAGSystem:
             print(f"Error reading HF_TOKEN: {e}")
             return None
 
+    def detect_language(self, text: str) -> str | None:
+        """
+        Detect the language of the given text.
+        
+        Args:
+            text: The text to analyze
+            
+        Returns:
+            The detected language code (e.g., 'en', 'fr', etc.)
+        """
+        try:
+            language = detect(text)
+            if self.debug_print:
+                print(f"Detected language: {language}")
+            return language
+        except Exception as e:
+            print(f"Error detecting language: {e}")
+            return None
+
+
     def parse_chapters(self, text: str) -> List[Document]:
         """
         Splits the full text into chapter-level Documents.
         Handles: "Chapter 1", "CHAPTER IV", "IV", "1", "Part One", etc.
         """
-        pattern = r'(?m)^\s*((?:(?:CHAPTER|Chapter|chapter|PART|Part|part|BOOK|Book|book)\s+(?:[IVXLCDM]+|\d+|[A-Za-z]+)|(?:[IVXLCDM]+)|(?:\d+))\.?)\s*$'
-        
+        text_langage = self.detect_language(text)
+        if text_langage is None or text_langage == 'en':
+            pattern = r'(?m)^\s*((?:(?:CHAPTER|Chapter|chapter|PART|Part|part|BOOK|Book|book)\s+(?:[IVXLCDM]+|\d+|[A-Za-z]+)|(?:[IVXLCDM]+)|(?:\d+))\.?)\s*$'
+        else:
+            words_to_translate = ["CHAPTER", "Chapter", "chapter", "PART", "Part", "part", "BOOK", "Book", "book"]
+            translated_words = [ts.translate_text(word, from_language='en', to_language=text_langage) for word in words_to_translate]
+            words_pattern = '|'.join([re.escape(word) for word in translated_words])
+            pattern = rf'(?m)^\s*((?:(?:{words_pattern})\s+(?:[IVXLCDM]+|\d+|[A-Za-z]+)|(?:[IVXLCDM]+)|(?:\d+))\.?)\s*$'
+
+            if self.debug_print:
+                print(f"Pattern translated for language '{text_langage}' : {pattern}")
+
+
         matches = list(re.finditer(pattern, text))
         
         documents = []
